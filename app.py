@@ -1,14 +1,9 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import cv2
 import numpy as np
 import base64
-import logging
-
-# Setup logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Drowsiness Detector")
 
@@ -22,17 +17,19 @@ app.add_middleware(
 )
 
 # ---------- Config ----------
-EYE_CLOSED_CONSEC_FRAMES = 5  # Reduced for testing
+EYE_CLOSED_CONSEC_FRAMES = 8  # About 2 seconds at 4 FPS
 closed_eye_counter = 0
+drowsy_alert_triggered = False
 
-# Load Haar cascades
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+# Load Haar cascades - using more reliable cascade files
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
 
 def analyze_frame(frame_bytes):
-    global closed_eye_counter
+    global closed_eye_counter, drowsy_alert_triggered
     
     try:
+        # Convert bytes to image
         nparr = np.frombuffer(frame_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
@@ -42,72 +39,116 @@ def analyze_frame(frame_bytes):
                 "is_drowsy": False,
                 "alert_sound": False,
                 "eyes_detected": 0,
-                "closed_eye_counter": closed_eye_counter,
-                "debug": "Frame decoding failed"
+                "closed_eye_counter": 0
             }
         
+        # Resize frame for faster processing
+        frame = cv2.resize(frame, (640, 480))
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
         
-        logger.debug(f"Faces detected: {len(faces)}")
+        # Detect faces with better parameters
+        faces = face_cascade.detectMultiScale(
+            gray, 
+            scaleFactor=1.1, 
+            minNeighbors=5, 
+            minSize=(100, 100)
+        )
         
         eyes_detected = 0
-        status = "NO FACE"
+        status = "NO FACE DETECTED"
         is_drowsy = False
         alert_sound = False
         
         if len(faces) > 0:
             for (x, y, w, h) in faces:
+                # Extract face region
                 roi_gray = gray[y:y+h, x:x+w]
-                eyes = eye_cascade.detectMultiScale(roi_gray, 1.1, 4, minSize=(20, 20))
+                roi_color = frame[y:y+h, x:x+w]
+                
+                # Detect eyes within face region with better parameters
+                eyes = eye_cascade.detectMultiScale(
+                    roi_gray,
+                    scaleFactor=1.1,
+                    minNeighbors=3,
+                    minSize=(30, 30)
+                )
+                
                 eyes_detected = len(eyes)
                 
-                logger.debug(f"Eyes detected in face: {eyes_detected}")
+                # Draw face rectangle
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
                 
-                # Simple drowsiness logic
-                if eyes_detected < 2:
+                # Draw eye rectangles and count valid eyes
+                valid_eyes = 0
+                for (ex, ey, ew, eh) in eyes:
+                    # Filter eyes - they should be in upper half of face
+                    if ey < h/2:
+                        cv2.rectangle(frame, (x+ex, y+ey), (x+ex+ew, y+ey+eh), (0, 255, 0), 2)
+                        valid_eyes += 1
+                
+                eyes_detected = valid_eyes
+                
+                # DROWSINESS DETECTION LOGIC
+                if eyes_detected < 2:  # Less than 2 eyes detected
                     closed_eye_counter += 1
                     status = f"EYES CLOSING ({closed_eye_counter}/{EYE_CLOSED_CONSEC_FRAMES})"
                     
                     if closed_eye_counter >= EYE_CLOSED_CONSEC_FRAMES:
-                        status = "DROWSY!"
+                        status = "DROWSY! ALERT!"
                         is_drowsy = True
                         alert_sound = True
-                else:
-                    closed_eye_counter = 0
-                    status = "AWAKE"
-                    is_drowsy = False
+                        drowsy_alert_triggered = True
+                    else:
+                        alert_sound = False
+                        
+                else:  # 2 eyes detected - awake
+                    if drowsy_alert_triggered:
+                        status = "RECOVERING..."
+                        alert_sound = False
+                        # Reset after a few frames of open eyes
+                        if closed_eye_counter == 0:
+                            drowsy_alert_triggered = False
+                    else:
+                        status = "AWAKE"
+                    closed_eye_counter = max(0, closed_eye_counter - 2)
                     alert_sound = False
                 
                 break
         else:
             closed_eye_counter = 0
-            status = "NO FACE"
+            status = "NO FACE - MOVE CLOSER"
+            alert_sound = False
         
-        # Add debug text to frame
-        overlay_frame = frame.copy()
-        height, width = overlay_frame.shape[:2]
+        # ADD OVERLAY TO FRAME
+        height, width = frame.shape[:2]
         
-        # Status overlay
-        if status == "DROWSY!":
-            cv2.rectangle(overlay_frame, (0, 0), (width, 80), (0, 0, 255), -1)
-            cv2.putText(overlay_frame, "🚨 DROWSY! ALERT! 🚨", (50, 40), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        # Status banner at top
+        if "DROWSY" in status:
+            # Red background for drowsy
+            cv2.rectangle(frame, (0, 0), (width, 80), (0, 0, 255), -1)
+            cv2.putText(frame, "🚨 DROWSY DETECTED! 🚨", (width//2 - 180, 35), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.putText(frame, "WAKE UP! ALERT! WAKE UP!", (width//2 - 150, 65), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         elif "EYES CLOSING" in status:
-            cv2.rectangle(overlay_frame, (0, 0), (width, 60), (0, 255, 255), -1)
-            cv2.putText(overlay_frame, status, (50, 35), 
+            # Yellow background for warning
+            cv2.rectangle(frame, (0, 0), (width, 60), (0, 255, 255), -1)
+            cv2.putText(frame, "⚠️ EYES CLOSING ⚠️", (width//2 - 120, 35), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
         else:
-            cv2.rectangle(overlay_frame, (0, 0), (width, 50), (0, 255, 0), -1)
-            cv2.putText(overlay_frame, f"✅ {status}", (50, 30), 
+            # Green background for awake
+            cv2.rectangle(frame, (0, 0), (width, 50), (0, 255, 0), -1)
+            cv2.putText(frame, f"✅ {status}", (width//2 - 70, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
         
-        # Debug info at bottom
-        cv2.putText(overlay_frame, f"Faces: {len(faces)} | Eyes: {eyes_detected}", 
-                   (10, height-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        # Info at bottom
+        cv2.rectangle(frame, (0, height-40), (width, height), (0, 0, 0), -1)
+        info_text = f"Faces: {len(faces)} | Eyes: {eyes_detected} | Closed Frames: {closed_eye_counter}"
+        cv2.putText(frame, info_text, (10, height-10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
-        # Convert to base64
-        _, buffer = cv2.imencode('.jpg', overlay_frame)
+        # Convert to base64 for frontend
+        _, buffer = cv2.imencode('.jpg', frame)
         processed_frame_base64 = base64.b64encode(buffer).decode('utf-8')
         
         return {
@@ -117,37 +158,30 @@ def analyze_frame(frame_bytes):
             "eyes_detected": eyes_detected,
             "closed_eye_counter": closed_eye_counter,
             "faces_detected": len(faces),
-            "processed_frame": processed_frame_base64,
-            "debug": f"Faces: {len(faces)}, Eyes: {eyes_detected}"
+            "processed_frame": processed_frame_base64
         }
         
     except Exception as e:
-        logger.error(f"Error in analyze_frame: {str(e)}")
         return {
-            "status": "ERROR",
+            "status": f"ERROR: {str(e)}",
             "is_drowsy": False,
             "alert_sound": False,
             "eyes_detected": 0,
             "closed_eye_counter": 0,
-            "debug": f"Error: {str(e)}"
+            "faces_detected": 0
         }
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     try:
-        logger.debug("Received analyze request")
         frame_bytes = await file.read()
-        logger.debug(f"Frame size: {len(frame_bytes)} bytes")
         result = analyze_frame(frame_bytes)
-        logger.debug(f"Analysis result: {result}")
         return JSONResponse(result)
     except Exception as e:
-        logger.error(f"Error in /analyze: {str(e)}")
         return JSONResponse({
             "status": "SERVER ERROR", 
             "is_drowsy": False,
-            "alert_sound": False,
-            "debug": f"Server error: {str(e)}"
+            "alert_sound": False
         })
 
 @app.get("/")
@@ -156,37 +190,123 @@ async def home():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Drowsiness Detector - DEBUG</title>
+        <title>Drowsiness Detector - FIXED</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-            body { font-family: Arial; margin: 20px; background: #f0f0f0; }
-            .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }
-            .camera-container { position: relative; margin: 20px 0; }
-            #video, #processedCanvas { width: 100%; max-width: 640px; border: 2px solid #333; }
-            #processedCanvas { position: absolute; top: 0; left: 0; }
-            .debug { background: #eee; padding: 10px; border-radius: 5px; margin: 10px 0; }
-            .alert { background: red; color: white; padding: 20px; font-size: 24px; text-align: center; display: none; }
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { 
+                font-family: Arial, sans-serif; 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 20px;
+            }
+            .container {
+                background: white;
+                border-radius: 20px;
+                padding: 30px;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                max-width: 800px;
+                width: 100%;
+                text-align: center;
+            }
+            h1 { color: #333; margin-bottom: 10px; }
+            .subtitle { color: #666; margin-bottom: 20px; }
+            .camera-container {
+                position: relative;
+                margin: 20px auto;
+                border-radius: 15px;
+                overflow: hidden;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                max-width: 640px;
+            }
+            #video { width: 100%; display: block; }
+            #processedCanvas {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+            }
+            .metrics {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 15px;
+                margin: 20px 0;
+            }
+            .metric-card {
+                background: #f8f9fa;
+                padding: 20px;
+                border-radius: 10px;
+                border-left: 4px solid #667eea;
+            }
+            .metric-value {
+                font-size: 2em;
+                font-weight: bold;
+                margin: 10px 0;
+            }
+            .alert-panel {
+                background: linear-gradient(45deg, #ff416c, #ff4b2b);
+                color: white;
+                padding: 20px;
+                border-radius: 10px;
+                margin: 20px 0;
+                display: none;
+                animation: alert-pulse 0.5s infinite alternate;
+            }
+            .alert-panel.show { display: block; }
+            @keyframes alert-pulse {
+                0% { transform: scale(1); opacity: 1; }
+                100% { transform: scale(1.02); opacity: 0.9; }
+            }
+            .instructions {
+                background: #e9ecef;
+                padding: 15px;
+                border-radius: 10px;
+                margin-top: 20px;
+                text-align: left;
+            }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🚗 Drowsiness Detector - DEBUG</h1>
-            <p>Close your eyes for 3+ seconds to test</p>
+            <h1>🚗 Drowsiness Detector - FIXED</h1>
+            <p class="subtitle">Close your eyes for 2+ seconds to test</p>
             
             <div class="camera-container">
                 <video id="video" autoplay playsinline></video>
                 <canvas id="processedCanvas"></canvas>
             </div>
             
-            <div id="alert" class="alert">🚨 DROWSY DETECTED! 🚨</div>
+            <div id="alertPanel" class="alert-panel">
+                🚨 ALERT: DROWSINESS DETECTED! 🚨
+            </div>
             
-            <div class="debug">
-                <h3>Debug Info:</h3>
-                <div>Status: <span id="status">Loading...</span></div>
-                <div>Faces: <span id="faces">0</span></div>
-                <div>Eyes: <span id="eyes">0</span></div>
-                <div>Closed Counter: <span id="closedCounter">0</span></div>
-                <div>Alert Sound: <span id="alertSound">No</span></div>
-                <div>Last Error: <span id="error">None</span></div>
+            <div class="metrics">
+                <div class="metric-card">
+                    <div>Status</div>
+                    <div id="status" class="metric-value">AWAKE</div>
+                </div>
+                <div class="metric-card">
+                    <div>Eyes Detected</div>
+                    <div id="eyesCount" class="metric-value">0</div>
+                </div>
+                <div class="metric-card">
+                    <div>Closed Frames</div>
+                    <div id="closedCounter" class="metric-value">0</div>
+                </div>
+            </div>
+            
+            <div class="instructions">
+                <strong>How to test:</strong>
+                <ul>
+                    <li>Make sure your face is clearly visible</li>
+                    <li>Good lighting is important</li>
+                    <li>Close your eyes for 2+ seconds</li>
+                    <li>System will detect and play alert sound</li>
+                </ul>
             </div>
             
             <audio id="alertSound" preload="auto">
@@ -199,95 +319,103 @@ async def home():
             const canvas = document.getElementById('processedCanvas');
             const ctx = canvas.getContext('2d');
             const statusEl = document.getElementById('status');
-            const facesEl = document.getElementById('faces');
-            const eyesEl = document.getElementById('eyes');
+            const eyesCountEl = document.getElementById('eyesCount');
             const closedCounterEl = document.getElementById('closedCounter');
-            const alertSoundEl = document.getElementById('alertSound');
-            const alertEl = document.getElementById('alert');
-            const alertSoundFlag = document.getElementById('alertSound');
-            const errorEl = document.getElementById('error');
-
+            const alertPanel = document.getElementById('alertPanel');
+            const alertSound = document.getElementById('alertSound');
+            
+            let isProcessing = false;
+            
             // Set canvas size
             canvas.width = 640;
             canvas.height = 480;
-
+            
             // Access webcam
             async function setupCamera() {
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ 
-                        video: { width: 640, height: 480 } 
+                        video: { 
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                            facingMode: 'user'
+                        } 
                     });
                     video.srcObject = stream;
-                    console.log('Camera access successful');
+                    
+                    video.onloadedmetadata = () => {
+                        console.log('Camera ready');
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                    };
+                    
                 } catch (err) {
-                    errorEl.textContent = 'Camera error: ' + err.message;
-                    console.error('Camera error:', err);
+                    alert('Camera error: ' + err.message);
                 }
             }
-
-            // Process frames
+            
+            // Process frame
             async function processFrame() {
-                if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                    const tempCanvas = document.createElement('canvas');
-                    const tempCtx = tempCanvas.getContext('2d');
-                    tempCanvas.width = video.videoWidth;
-                    tempCanvas.height = video.videoHeight;
-                    tempCtx.drawImage(video, 0, 0);
-
-                    tempCanvas.toBlob(async (blob) => {
-                        const formData = new FormData();
-                        formData.append('file', blob, 'frame.jpg');
-
-                        try {
-                            const response = await fetch('/analyze', {
-                                method: 'POST',
-                                body: formData
-                            });
-                            
-                            if (response.ok) {
-                                const data = await response.json();
-                                
-                                // Update debug info
-                                statusEl.textContent = data.status;
-                                facesEl.textContent = data.faces_detected || 0;
-                                eyesEl.textContent = data.eyes_detected || 0;
-                                closedCounterEl.textContent = data.closed_eye_counter || 0;
-                                alertSoundFlag.textContent = data.alert_sound ? 'YES' : 'NO';
-                                errorEl.textContent = data.debug || 'No error';
-                                
-                                // Show/hide alert
-                                if (data.alert_sound) {
-                                    alertEl.style.display = 'block';
-                                    alertSoundEl.play().catch(e => console.log('Audio error:', e));
-                                } else {
-                                    alertEl.style.display = 'none';
-                                }
-                                
-                                // Display processed frame
-                                if (data.processed_frame) {
-                                    const img = new Image();
-                                    img.onload = () => {
-                                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                                    };
-                                    img.src = 'data:image/jpeg;base64,' + data.processed_frame;
-                                }
-                            } else {
-                                errorEl.textContent = 'Server response error: ' + response.status;
-                            }
-                        } catch (err) {
-                            errorEl.textContent = 'Fetch error: ' + err.message;
-                            console.error('Fetch error:', err);
-                        }
-                    }, 'image/jpeg');
+                if (isProcessing || video.readyState !== video.HAVE_ENOUGH_DATA) {
+                    requestAnimationFrame(processFrame);
+                    return;
                 }
                 
-                setTimeout(processFrame, 200); // Process every 200ms
+                isProcessing = true;
+                
+                const tempCanvas = document.createElement('canvas');
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCanvas.width = video.videoWidth;
+                tempCanvas.height = video.videoHeight;
+                tempCtx.drawImage(video, 0, 0);
+                
+                tempCanvas.toBlob(async (blob) => {
+                    const formData = new FormData();
+                    formData.append('file', blob, 'frame.jpg');
+                    
+                    try {
+                        const response = await fetch('/analyze', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        if (response.ok) {
+                            const data = await response.json();
+                            
+                            // Update UI
+                            statusEl.textContent = data.status;
+                            eyesCountEl.textContent = data.eyes_detected;
+                            closedCounterEl.textContent = data.closed_eye_counter;
+                            
+                            // Handle alerts
+                            if (data.alert_sound) {
+                                alertPanel.classList.add('show');
+                                alertSound.play().catch(e => console.log('Audio play failed'));
+                            } else {
+                                alertPanel.classList.remove('show');
+                            }
+                            
+                            // Display processed frame
+                            if (data.processed_frame) {
+                                const img = new Image();
+                                img.onload = () => {
+                                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                                };
+                                img.src = 'data:image/jpeg;base64,' + data.processed_frame;
+                            }
+                        }
+                    } catch (err) {
+                        console.error('Error:', err);
+                    }
+                    
+                    isProcessing = false;
+                    requestAnimationFrame(processFrame);
+                }, 'image/jpeg', 0.7);
             }
-
+            
             // Initialize
             setupCamera().then(() => {
-                setTimeout(processFrame, 1000); // Start after 1 second
+                setTimeout(() => processFrame(), 1000);
             });
         </script>
     </body>
@@ -297,4 +425,4 @@ async def home():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "message": "Drowsiness detector is running"}
+    return {"status": "healthy", "message": "Drowsiness detector is working!"}
