@@ -3,378 +3,153 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Drowsiness Detector - Live Camera</title>
+    <title>Drowsiness Detector</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
         body {
             font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            max-width: 800px;
+            margin: 0 auto;
             padding: 20px;
-        }
-        
-        .container {
-            background: white;
-            border-radius: 20px;
-            padding: 30px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            max-width: 900px;
-            width: 100%;
             text-align: center;
         }
-        
-        h1 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 2.5em;
-        }
-        
-        .subtitle {
-            color: #666;
-            margin-bottom: 30px;
-        }
-        
-        .camera-container {
-            position: relative;
-            margin: 0 auto 30px;
-            border-radius: 15px;
-            overflow: hidden;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            max-width: 640px;
-            background: #000;
-        }
-        
-        #video {
-            width: 100%;
-            height: auto;
-            display: block;
-        }
-        
-        #processedCanvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-        }
-        
-        .status-banner {
-            padding: 20px;
-            border-radius: 15px;
+        .container {
             margin: 20px 0;
-            font-size: 1.5em;
+        }
+        #video, #canvas {
+            border: 2px solid #333;
+            border-radius: 8px;
+            margin: 10px;
+        }
+        .alert {
+            color: red;
             font-weight: bold;
-            color: white;
-            transition: all 0.3s ease;
+            font-size: 24px;
+            margin: 20px 0;
         }
-        
-        .status-awake {
-            background: linear-gradient(45deg, #4CAF50, #45a049);
-        }
-        
-        .status-drowsy {
-            background: linear-gradient(45deg, #ff416c, #ff4b2b);
-            animation: alert-pulse 0.5s infinite alternate;
-        }
-        
-        .status-warning {
-            background: linear-gradient(45deg, #ff9800, #f57c00);
-        }
-        
-        .status-error {
-            background: linear-gradient(45deg, #6c757d, #495057);
-        }
-        
-        .metrics {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
-        }
-        
-        .metric-card {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 10px;
-            border-left: 4px solid #667eea;
-        }
-        
-        .metric-value {
-            font-size: 2em;
-            font-weight: bold;
-            color: #333;
+        .status {
+            font-size: 18px;
             margin: 10px 0;
-        }
-        
-        .metric-label {
-            color: #666;
-            font-size: 0.9em;
-        }
-        
-        .debug-info {
-            background: #333;
-            color: white;
-            padding: 15px;
-            border-radius: 10px;
-            margin: 20px 0;
-            font-family: monospace;
-            font-size: 0.9em;
-            text-align: left;
-        }
-        
-        .instructions {
-            background: #e9ecef;
-            padding: 20px;
-            border-radius: 10px;
-            margin-top: 20px;
-            text-align: left;
-        }
-        
-        @keyframes alert-pulse {
-            0% { transform: scale(1); opacity: 1; }
-            100% { transform: scale(1.05); opacity: 0.9; }
-        }
-        
-        .loading {
-            color: #666;
-            font-style: italic;
         }
     </style>
 </head>
 <body>
+    <h1>Drowsiness Detector</h1>
+    <p>Live Camera Feed - Look at the camera to detect drowsiness</p>
+    
     <div class="container">
-        <h1>🚗 Drowsiness Detector</h1>
-        <p class="subtitle">Real-time eye monitoring for driver safety</p>
-        
-        <div class="camera-container">
-            <video id="video" autoplay playsinline></video>
-            <canvas id="processedCanvas"></canvas>
-        </div>
-        
-        <div id="statusBanner" class="status-banner status-awake">
-            ✅ AWAKE - ALERT
-        </div>
-        
-        <div class="metrics">
-            <div class="metric-card">
-                <div class="metric-label">CURRENT STATUS</div>
-                <div id="currentStatus" class="metric-value">AWAKE</div>
-                <div class="metric-label">REAL-TIME DETECTION</div>
-            </div>
-            
-            <div class="metric-card">
-                <div class="metric-label">EYES DETECTED</div>
-                <div id="eyesDetected" class="metric-value">0</div>
-                <div class="metric-label">OPEN EYES COUNT</div>
-            </div>
-            
-            <div class="metric-card">
-                <div class="metric-label">CLOSED FRAME COUNT</div>
-                <div id="closedCounter" class="metric-value">0</div>
-                <div class="metric-label">FRAMES WITH CLOSED EYES</div>
-            </div>
-        </div>
-        
-        <div class="debug-info">
-            <div><strong>Debug Information:</strong></div>
-            <div>Status: <span id="debugStatus" class="loading">Connecting...</span></div>
-            <div>Faces Detected: <span id="debugFaces">0</span></div>
-            <div>Eyes Detected: <span id="debugEyes">0</span></div>
-            <div>Alert Sound: <span id="debugAlert">No</span></div>
-            <div>Connection: <span id="debugConnection">Checking...</span></div>
-        </div>
-        
-        <div class="instructions">
-            <h3>🎯 How it works:</h3>
-            <p><strong>Close your eyes for 3+ seconds to test the detection!</strong></p>
-            <p><strong>Detection States:</strong></p>
-            <ul>
-                <li>🟢 <strong>AWAKE</strong>: 2 eyes detected (Face should be clearly visible)</li>
-                <li>🟡 <strong>EYES CLOSING</strong>: Less than 2 eyes detected</li>
-                <li>🔴 <strong>DROWSY</strong>: Eyes closed for 8+ consecutive frames</li>
-            </ul>
-            <p><strong>Tips for better detection:</strong></p>
-            <ul>
-                <li>Ensure good lighting on your face</li>
-                <li>Look directly at the camera</li>
-                <li>Remove glasses if possible</li>
-                <li>Keep face within the camera view</li>
-            </ul>
-        </div>
-        
-        <audio id="alertSound" preload="auto">
-            <source src="https://assets.mixkit.co/active_storage/sfx/259/259-preview.mp3" type="audio/mpeg">
-        </audio>
+        <video id="video" width="640" height="480" autoplay playsinline></video>
+        <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
     </div>
+    
+    <div class="status">
+        Fatigue Score: <span id="fatigue">0</span>
+    </div>
+    
+    <div class="status">
+        Blink Counter: <span id="blinkCounter">0</span>
+    </div>
+    
+    <div class="status">
+        Eyes Detected: <span id="eyesDetected">0</span>
+    </div>
+    
+    <div id="alert" class="alert" style="display:none;">
+        ⚠️ DROWSY DETECTED! ⚠️
+    </div>
+    
+    <audio id="alertSound" preload="auto">
+        <source src="https://assets.mixkit.co/sfx/preview/mixkit-alarm-digital-clock-beep-989.mp3" type="audio/mpeg">
+    </audio>
 
     <script>
-        const video = document.getElementById('video');
-        const processedCanvas = document.getElementById('processedCanvas');
-        const ctx = processedCanvas.getContext('2d');
-        const statusBanner = document.getElementById('statusBanner');
-        const currentStatus = document.getElementById('currentStatus');
-        const eyesDetected = document.getElementById('eyesDetected');
-        const closedCounter = document.getElementById('closedCounter');
-        const debugStatus = document.getElementById('debugStatus');
-        const debugFaces = document.getElementById('debugFaces');
-        const debugEyes = document.getElementById('debugEyes');
-        const debugAlert = document.getElementById('debugAlert');
-        const debugConnection = document.getElementById('debugConnection');
-        const alertSound = document.getElementById('alertSound');
+        const video = document.getElementById("video");
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        const fatigueEl = document.getElementById("fatigue");
+        const blinkCounterEl = document.getElementById("blinkCounter");
+        const eyesDetectedEl = document.getElementById("eyesDetected");
+        const alertDiv = document.getElementById("alert");
+        const alertSound = document.getElementById("alertSound");
         
-        let alertPlaying = false;
-        let connectionOk = false;
-        
-        // Set canvas size
-        processedCanvas.width = 640;
-        processedCanvas.height = 480;
-        
+        const ALERT_THRESHOLD = 0.75;
+        let isAlertPlaying = false;
+
         // Access webcam
         async function setupCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { 
-                        width: { ideal: 640 },
-                        height: { ideal: 480 },
-                        facingMode: 'user'
+                        width: 640, 
+                        height: 480 
                     } 
                 });
                 video.srcObject = stream;
-                
-                video.onloadedmetadata = () => {
-                    processedCanvas.width = video.videoWidth;
-                    processedCanvas.height = video.videoHeight;
-                    debugConnection.textContent = 'Connected';
-                    debugConnection.style.color = 'green';
-                    console.log('Camera ready - Resolution:', video.videoWidth, 'x', video.videoHeight);
-                };
-                
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        resolve(video);
+                    };
+                });
             } catch (err) {
-                console.error('Camera error:', err);
-                debugConnection.textContent = 'Failed - ' + err.message;
-                debugConnection.style.color = 'red';
-                alert('Cannot access camera. Please allow camera permissions and refresh the page.');
+                console.error("Error accessing webcam:", err);
+                alert("Error accessing webcam: " + err.message);
+                return null;
             }
         }
-        
-        // Process frames
-        async function processFrame() {
+
+        // Capture frame and send to server
+        async function captureAndAnalyze() {
             if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                const tempCanvas = document.createElement('canvas');
-                const tempCtx = tempCanvas.getContext('2d');
-                tempCanvas.width = video.videoWidth;
-                tempCanvas.height = video.videoHeight;
-                tempCtx.drawImage(video, 0, 0);
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
                 
-                tempCanvas.toBlob(async (blob) => {
+                canvas.toBlob(async (blob) => {
                     const formData = new FormData();
-                    formData.append('file', blob, 'frame.jpg');
+                    formData.append("file", blob, "frame.jpg");
                     
                     try {
-                        const startTime = Date.now();
-                        const response = await fetch('https://drowsiness-eight.vercel.app/analyze', {
-                            method: 'POST',
+                        // Use relative path for deployment
+                        const response = await fetch("/analyze", {
+                            method: "POST",
                             body: formData
                         });
                         
-                        const responseTime = Date.now() - startTime;
-                        
                         if (response.ok) {
                             const data = await response.json();
-                            connectionOk = true;
-                            debugConnection.textContent = `Connected (${responseTime}ms)`;
-                            debugConnection.style.color = 'green';
                             
                             // Update UI
-                            updateUI(data);
+                            fatigueEl.textContent = data.fatigue_score.toFixed(2);
+                            blinkCounterEl.textContent = data.blink_counter || 0;
+                            eyesDetectedEl.textContent = data.eyes_detected || 0;
                             
-                            // Display processed frame with overlay
-                            if (data.processed_frame) {
-                                const img = new Image();
-                                img.onload = () => {
-                                    ctx.clearRect(0, 0, processedCanvas.width, processedCanvas.height);
-                                    ctx.drawImage(img, 0, 0, processedCanvas.width, processedCanvas.height);
-                                };
-                                img.src = 'data:image/jpeg;base64,' + data.processed_frame;
-                            }
-                            
-                            // Play alert sound if needed
-                            if (data.alert_sound && !alertPlaying) {
-                                playAlertSound();
-                            } else if (!data.alert_sound) {
-                                alertPlaying = false;
+                            // Check for drowsiness
+                            if (data.fatigue_score > ALERT_THRESHOLD) {
+                                alertDiv.style.display = 'block';
+                                if (!isAlertPlaying) {
+                                    alertSound.play().catch(e => console.log("Audio play failed:", e));
+                                    isAlertPlaying = true;
+                                }
+                            } else {
+                                alertDiv.style.display = 'none';
+                                isAlertPlaying = false;
                             }
                         } else {
-                            throw new Error(`HTTP ${response.status}`);
+                            console.error("Server error:", response.status);
                         }
                     } catch (err) {
-                        console.error('Request error:', err);
-                        connectionOk = false;
-                        debugConnection.textContent = 'Failed - ' + err.message;
-                        debugConnection.style.color = 'red';
-                        statusBanner.textContent = '❌ CONNECTION ERROR';
-                        statusBanner.className = 'status-banner status-error';
+                        console.error("Error analyzing frame:", err);
                     }
-                }, 'image/jpeg', 0.8);
-            }
-            
-            setTimeout(processFrame, 300); // Process every 300ms
-        }
-        
-        // Update UI
-        function updateUI(data) {
-            const status = data.status || 'AWAKE';
-            const isDrowsy = data.is_drowsy || false;
-            
-            currentStatus.textContent = status;
-            eyesDetected.textContent = data.eyes_detected || 0;
-            closedCounter.textContent = data.closed_eye_counter || 0;
-            debugStatus.textContent = status;
-            debugFaces.textContent = data.faces_detected || 0;
-            debugEyes.textContent = data.eyes_detected || 0;
-            debugAlert.textContent = data.alert_sound ? 'YES 🔔' : 'No';
-            
-            // Update status banner
-            if (status === 'DROWSY') {
-                statusBanner.textContent = '🚨 DROWSY DETECTED! ALERT! 🚨';
-                statusBanner.className = 'status-banner status-drowsy';
-            } else if (status.includes('EYES CLOSING')) {
-                statusBanner.textContent = '⚠️ EYES CLOSING - WARNING! ⚠️';
-                statusBanner.className = 'status-banner status-warning';
-            } else if (status.includes('NO FACE')) {
-                statusBanner.textContent = '👤 NO FACE DETECTED';
-                statusBanner.className = 'status-banner status-error';
-            } else {
-                statusBanner.textContent = '✅ AWAKE - ALERT';
-                statusBanner.className = 'status-banner status-awake';
+                }, "image/jpeg", 0.8);
             }
         }
-        
-        // Play alert sound
-        function playAlertSound() {
-            alertPlaying = true;
-            alertSound.currentTime = 0;
-            alertSound.play().catch(e => {
-                console.log('Audio play failed:', e);
-                alertPlaying = false;
-            });
-        }
-        
-        // Initialize
+
+        // Initialize app
         async function init() {
-            await setupCamera();
-            setTimeout(processFrame, 1000);
+            const camera = await setupCamera();
+            if (camera) {
+                // Start analysis loop
+                setInterval(captureAndAnalyze, 1000); // Reduced to 1 second interval
+            }
         }
-        
+
         // Start the application
         init();
     </script>
