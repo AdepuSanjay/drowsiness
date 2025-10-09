@@ -49,6 +49,7 @@
             overflow: hidden;
             box-shadow: 0 10px 30px rgba(0,0,0,0.2);
             max-width: 640px;
+            background: #000;
         }
         
         #video {
@@ -73,6 +74,7 @@
             font-size: 1.5em;
             font-weight: bold;
             color: white;
+            transition: all 0.3s ease;
         }
         
         .status-awake {
@@ -86,6 +88,10 @@
         
         .status-warning {
             background: linear-gradient(45deg, #ff9800, #f57c00);
+        }
+        
+        .status-error {
+            background: linear-gradient(45deg, #6c757d, #495057);
         }
         
         .metrics {
@@ -114,6 +120,17 @@
             font-size: 0.9em;
         }
         
+        .debug-info {
+            background: #333;
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            font-family: monospace;
+            font-size: 0.9em;
+            text-align: left;
+        }
+        
         .instructions {
             background: #e9ecef;
             padding: 20px;
@@ -127,14 +144,9 @@
             100% { transform: scale(1.05); opacity: 0.9; }
         }
         
-        .debug-info {
-            background: #333;
-            color: white;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-            font-family: monospace;
-            font-size: 0.9em;
+        .loading {
+            color: #666;
+            font-style: italic;
         }
     </style>
 </head>
@@ -173,18 +185,29 @@
         </div>
         
         <div class="debug-info">
-            Status: <span id="debugStatus">Connecting...</span> | 
-            Alert: <span id="debugAlert">No</span>
+            <div><strong>Debug Information:</strong></div>
+            <div>Status: <span id="debugStatus" class="loading">Connecting...</span></div>
+            <div>Faces Detected: <span id="debugFaces">0</span></div>
+            <div>Eyes Detected: <span id="debugEyes">0</span></div>
+            <div>Alert Sound: <span id="debugAlert">No</span></div>
+            <div>Connection: <span id="debugConnection">Checking...</span></div>
         </div>
         
         <div class="instructions">
             <h3>🎯 How it works:</h3>
-            <p>System monitors your eyes in real-time. Close your eyes for 3+ seconds to test drowsiness detection!</p>
+            <p><strong>Close your eyes for 3+ seconds to test the detection!</strong></p>
             <p><strong>Detection States:</strong></p>
             <ul>
-                <li>🟢 <strong>AWAKE</strong>: 2 eyes detected</li>
+                <li>🟢 <strong>AWAKE</strong>: 2 eyes detected (Face should be clearly visible)</li>
                 <li>🟡 <strong>EYES CLOSING</strong>: Less than 2 eyes detected</li>
-                <li>🔴 <strong>DROWSY</strong>: Eyes closed for 10+ consecutive frames</li>
+                <li>🔴 <strong>DROWSY</strong>: Eyes closed for 8+ consecutive frames</li>
+            </ul>
+            <p><strong>Tips for better detection:</strong></p>
+            <ul>
+                <li>Ensure good lighting on your face</li>
+                <li>Look directly at the camera</li>
+                <li>Remove glasses if possible</li>
+                <li>Keep face within the camera view</li>
             </ul>
         </div>
         
@@ -202,10 +225,14 @@
         const eyesDetected = document.getElementById('eyesDetected');
         const closedCounter = document.getElementById('closedCounter');
         const debugStatus = document.getElementById('debugStatus');
+        const debugFaces = document.getElementById('debugFaces');
+        const debugEyes = document.getElementById('debugEyes');
         const debugAlert = document.getElementById('debugAlert');
+        const debugConnection = document.getElementById('debugConnection');
         const alertSound = document.getElementById('alertSound');
         
         let alertPlaying = false;
+        let connectionOk = false;
         
         // Set canvas size
         processedCanvas.width = 640;
@@ -226,11 +253,15 @@
                 video.onloadedmetadata = () => {
                     processedCanvas.width = video.videoWidth;
                     processedCanvas.height = video.videoHeight;
-                    console.log('Camera ready');
+                    debugConnection.textContent = 'Connected';
+                    debugConnection.style.color = 'green';
+                    console.log('Camera ready - Resolution:', video.videoWidth, 'x', video.videoHeight);
                 };
                 
             } catch (err) {
                 console.error('Camera error:', err);
+                debugConnection.textContent = 'Failed - ' + err.message;
+                debugConnection.style.color = 'red';
                 alert('Cannot access camera. Please allow camera permissions and refresh the page.');
             }
         }
@@ -249,13 +280,19 @@
                     formData.append('file', blob, 'frame.jpg');
                     
                     try {
-                        const response = await fetch('https://drowsiness-eight.vercel.app/analyze', {
+                        const startTime = Date.now();
+                        const response = await fetch('/analyze', {
                             method: 'POST',
                             body: formData
                         });
                         
+                        const responseTime = Date.now() - startTime;
+                        
                         if (response.ok) {
                             const data = await response.json();
+                            connectionOk = true;
+                            debugConnection.textContent = `Connected (${responseTime}ms)`;
+                            debugConnection.style.color = 'green';
                             
                             // Update UI
                             updateUI(data);
@@ -276,15 +313,21 @@
                             } else if (!data.alert_sound) {
                                 alertPlaying = false;
                             }
+                        } else {
+                            throw new Error(`HTTP ${response.status}`);
                         }
                     } catch (err) {
-                        console.error('Error:', err);
-                        debugStatus.textContent = 'Connection error';
+                        console.error('Request error:', err);
+                        connectionOk = false;
+                        debugConnection.textContent = 'Failed - ' + err.message;
+                        debugConnection.style.color = 'red';
+                        statusBanner.textContent = '❌ CONNECTION ERROR';
+                        statusBanner.className = 'status-banner status-error';
                     }
-                }, 'image/jpeg');
+                }, 'image/jpeg', 0.8);
             }
             
-            setTimeout(processFrame, 200); // Process every 200ms
+            setTimeout(processFrame, 300); // Process every 300ms
         }
         
         // Update UI
@@ -296,15 +339,20 @@
             eyesDetected.textContent = data.eyes_detected || 0;
             closedCounter.textContent = data.closed_eye_counter || 0;
             debugStatus.textContent = status;
-            debugAlert.textContent = data.alert_sound ? 'YES' : 'NO';
+            debugFaces.textContent = data.faces_detected || 0;
+            debugEyes.textContent = data.eyes_detected || 0;
+            debugAlert.textContent = data.alert_sound ? 'YES 🔔' : 'No';
             
             // Update status banner
             if (status === 'DROWSY') {
-                statusBanner.textContent = '🚨 DROWSY DETECTED! ALERT!';
+                statusBanner.textContent = '🚨 DROWSY DETECTED! ALERT! 🚨';
                 statusBanner.className = 'status-banner status-drowsy';
-            } else if (status === 'EYES CLOSING') {
-                statusBanner.textContent = '⚠️ EYES CLOSING - WARNING!';
+            } else if (status.includes('EYES CLOSING')) {
+                statusBanner.textContent = '⚠️ EYES CLOSING - WARNING! ⚠️';
                 statusBanner.className = 'status-banner status-warning';
+            } else if (status.includes('NO FACE')) {
+                statusBanner.textContent = '👤 NO FACE DETECTED';
+                statusBanner.className = 'status-banner status-error';
             } else {
                 statusBanner.textContent = '✅ AWAKE - ALERT';
                 statusBanner.className = 'status-banner status-awake';
@@ -327,6 +375,7 @@
             setTimeout(processFrame, 1000);
         }
         
+        // Start the application
         init();
     </script>
 </body>
