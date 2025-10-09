@@ -1,192 +1,194 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import cv2
 import numpy as np
-import base64
+import os
 
-app = FastAPI(title="Drowsiness Detector")
+app = FastAPI(title="Drowsiness Detector (Browser Webcam)")
 
 # ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["*"],  # Allow all origins for testing
+    allow_methods=["*"],  # Allow all methods
     allow_headers=["*"],
 )
 
+# ---------- Static Files ----------
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+
 # ---------- Config ----------
-EYE_CLOSED_CONSEC_FRAMES = 8  # Reduced for faster testing
-closed_eye_counter = 0
+EAR_CONSEC_FRAMES = 3  # Reduced for testing
+ALERT_THRESHOLD = 0.75
+blink_counter = 0
+fatigue_score = 0.0
 
 # Haar cascades
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
 
-# ---------- Helper Functions ----------
+# ---------- Helper ----------
+def smooth(prev, new, alpha=0.2):
+    return alpha * new + (1 - alpha) * prev
+
 def analyze_frame(frame_bytes):
-    global closed_eye_counter
-    
+    global blink_counter, fatigue_score
     try:
         nparr = np.frombuffer(frame_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
         if frame is None:
-            return {
-                "status": "NO FRAME",
-                "is_drowsy": False,
-                "alert_sound": False,
-                "eyes_detected": 0,
-                "closed_eye_counter": 0,
-                "faces_detected": 0
-            }
-        
-        # Resize frame for faster processing
-        frame = cv2.resize(frame, (640, 480))
+            return {"error": "Could not decode image"}
+            
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
         
-        # Detect faces with better parameters
-        faces = face_cascade.detectMultiScale(
-            gray, 
-            scaleFactor=1.1, 
-            minNeighbors=5, 
-            minSize=(100, 100)
-        )
-        
-        eyes_detected = 0
-        status = "NO FACE"
-        is_drowsy = False
-        alert_sound = False
-        
-        # Create overlay frame
-        overlay_frame = frame.copy()
-        height, width = overlay_frame.shape[:2]
-        
+        score = 0.0
         if len(faces) > 0:
             for (x, y, w, h) in faces:
-                # Draw face rectangle
-                cv2.rectangle(overlay_frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-                cv2.putText(overlay_frame, "FACE", (x, y-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                roi_gray = gray[y:y+h, x:x+w]
+                eyes = eye_cascade.detectMultiScale(roi_gray)
                 
-                # Region of interest for eyes (upper half of face)
-                roi_gray = gray[y:y+int(h/2), x:x+w]
-                roi_color = overlay_frame[y:y+int(h/2), x:x+w]
+                # Debug: print number of eyes detected
+                print(f"Eyes detected: {len(eyes)}")
                 
-                # Detect eyes with better parameters
-                eyes = eye_cascade.detectMultiScale(
-                    roi_gray,
-                    scaleFactor=1.1,
-                    minNeighbors=3,
-                    minSize=(20, 20),
-                    maxSize=(80, 80)
-                )
-                
-                eyes_detected = len(eyes)
-                
-                # Draw eye rectangles and count them
-                eye_count = 0
-                for (ex, ey, ew, eh) in eyes:
-                    if eye_count < 2:  # Only draw first 2 eyes
-                        cv2.rectangle(roi_color, (ex, ey), (ex+ew, ey+eh), (0, 255, 0), 2)
-                        cv2.putText(roi_color, f"EYE {eye_count+1}", (ex, ey-5), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 0), 1)
-                        eye_count += 1
-                
-                # Drowsiness detection logic
-                if eyes_detected < 2:  # Less than 2 eyes detected
-                    closed_eye_counter += 1
-                    if closed_eye_counter >= EYE_CLOSED_CONSEC_FRAMES:
-                        status = "DROWSY"
-                        is_drowsy = True
-                        alert_sound = True
-                    else:
-                        status = f"EYES CLOSING ({closed_eye_counter}/{EYE_CLOSED_CONSEC_FRAMES})"
-                        is_drowsy = False
-                        alert_sound = False
+                if len(eyes) < 2:  # Less than 2 eyes detected
+                    blink_counter += 1
+                    print(f"Eyes closed frame: {blink_counter}")
                 else:
-                    closed_eye_counter = 0
-                    status = "AWAKE"
-                    is_drowsy = False
-                    alert_sound = False
+                    blink_counter = 0
                 
+                # If eyes closed for consecutive frames, mark as drowsy
+                if blink_counter >= EAR_CONSEC_FRAMES:
+                    score = 1.0
+                    print("ALERT: Drowsiness detected!")
+                else:
+                    score = 0.0
+                    
+                fatigue_score = smooth(fatigue_score, score)
                 break
         else:
-            closed_eye_counter = 0
-            status = "NO FACE DETECTED"
-            is_drowsy = False
-            alert_sound = False
-        
-        # Add status overlay directly on the frame
-        if status == "DROWSY":
-            # Red background for drowsy
-            cv2.rectangle(overlay_frame, (0, 0), (width, 100), (0, 0, 255), -1)
-            cv2.putText(overlay_frame, "🚨 DROWSY DETECTED! 🚨", (width//2 - 180, 40), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-            cv2.putText(overlay_frame, "ALERT! WAKE UP!", (width//2 - 100, 70), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        elif "EYES CLOSING" in status:
-            # Yellow background for warning
-            cv2.rectangle(overlay_frame, (0, 0), (width, 80), (0, 255, 255), -1)
-            cv2.putText(overlay_frame, "⚠️ EYES CLOSING ⚠️", (width//2 - 120, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-            cv2.putText(overlay_frame, status.split('(')[1].split(')')[0], (width//2 - 60, 55), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
-        else:
-            # Green background for awake
-            cv2.rectangle(overlay_frame, (0, 0), (width, 60), (0, 255, 0), -1)
-            cv2.putText(overlay_frame, f"✅ {status}", (width//2 - 60, 35), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-        
-        # Add debug info at bottom
-        cv2.rectangle(overlay_frame, (0, height-30), (width, height), (0, 0, 0), -1)
-        cv2.putText(overlay_frame, f"Faces: {len(faces)} | Eyes: {eyes_detected} | Closed: {closed_eye_counter}", 
-                   (10, height-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
-        # Convert processed frame to base64
-        _, buffer = cv2.imencode('.jpg', overlay_frame)
-        processed_frame_base64 = base64.b64encode(buffer).decode('utf-8')
-        
+            blink_counter = 0
+            fatigue_score = smooth(fatigue_score, 0.0)
+            
         return {
-            "status": status,
-            "is_drowsy": is_drowsy,
-            "alert_sound": alert_sound,
-            "eyes_detected": eyes_detected,
-            "closed_eye_counter": closed_eye_counter,
-            "faces_detected": len(faces),
-            "processed_frame": processed_frame_base64
+            "fatigue_score": float(fatigue_score),
+            "blink_counter": int(blink_counter),
+            "eyes_detected": len(eyes) if 'eyes' in locals() else 0,
+            "faces_detected": len(faces)
         }
-        
     except Exception as e:
-        return {
-            "status": f"ERROR: {str(e)}",
-            "is_drowsy": False,
-            "alert_sound": False,
-            "eyes_detected": 0,
-            "closed_eye_counter": 0,
-            "faces_detected": 0,
-            "processed_frame": None
-        }
+        return {"error": str(e)}
 
+# ---------- Routes ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    try:
-        frame_bytes = await file.read()
-        result = analyze_frame(frame_bytes)
-        return JSONResponse(result)
-    except Exception as e:
-        return JSONResponse({
-            "status": f"SERVER ERROR: {str(e)}", 
-            "is_drowsy": False,
-            "alert_sound": False
-        })
+    frame_bytes = await file.read()
+    result = analyze_frame(frame_bytes)
+    return JSONResponse(result)
 
 @app.get("/")
 async def home():
-    with open("index.html", "r") as f:
-        return HTMLResponse(content=f.read())
+    # Serve the HTML file
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Drowsiness Detector</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .container { max-width: 800px; margin: 0 auto; }
+            .camera-container { position: relative; }
+            #video, #canvas { border: 2px solid #333; margin: 10px 0; }
+            .alert { color: red; font-weight: bold; font-size: 24px; }
+            .normal { color: green; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Drowsiness Detector</h1>
+            <div class="camera-container">
+                <video id="video" width="640" height="480" autoplay></video>
+                <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+            </div>
+            <div>
+                <h2>Fatigue Score: <span id="fatigue" class="normal">0</span></h2>
+                <p>Blink Counter: <span id="blinkCounter">0</span></p>
+                <p>Eyes Detected: <span id="eyesDetected">0</span></p>
+                <p>Status: <span id="status" class="normal">Normal</span></p>
+            </div>
+            <audio id="alertSound" src="https://assets.mixkit.co/sfx/preview/mixkit-alarm-digital-clock-beep-989.mp3" preload="auto"></audio>
+        </div>
 
-@app.get("/health")
-async def health():
-    return {"status": "healthy"}
+        <script>
+            const video = document.getElementById("video");
+            const canvas = document.getElementById("canvas");
+            const ctx = canvas.getContext("2d");
+            const fatigueEl = document.getElementById("fatigue");
+            const blinkCounterEl = document.getElementById("blinkCounter");
+            const eyesDetectedEl = document.getElementById("eyesDetected");
+            const statusEl = document.getElementById("status");
+            const alertSound = document.getElementById("alertSound");
+            
+            const ALERT_THRESHOLD = 0.75;
+
+            // Access webcam
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then(stream => {
+                    video.srcObject = stream;
+                })
+                .catch(err => {
+                    alert("Error accessing webcam: " + err);
+                });
+
+            // Capture frame and send to server every 500ms
+            setInterval(async () => {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob(async (blob) => {
+                    const formData = new FormData();
+                    formData.append("file", blob, "frame.jpg");
+                    
+                    try {
+                        // Use relative path for Vercel deployment
+                        const response = await fetch("/analyze", {
+                            method: "POST",
+                            body: formData
+                        });
+                        const data = await response.json();
+                        
+                        if (data.error) {
+                            console.error("Server error:", data.error);
+                            return;
+                        }
+                        
+                        fatigueEl.textContent = data.fatigue_score.toFixed(2);
+                        blinkCounterEl.textContent = data.blink_counter;
+                        eyesDetectedEl.textContent = data.eyes_detected || 0;
+                        
+                        if (data.fatigue_score > ALERT_THRESHOLD) {
+                            fatigueEl.className = "alert";
+                            statusEl.textContent = "DROWSY!";
+                            statusEl.className = "alert";
+                            alertSound.play();
+                        } else {
+                            fatigueEl.className = "normal";
+                            statusEl.textContent = "Normal";
+                            statusEl.className = "normal";
+                        }
+                    } catch(err) {
+                        console.error("Error analyzing frame:", err);
+                    }
+                }, "image/jpeg");
+            }, 500);
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+# For Vercel deployment
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
