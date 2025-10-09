@@ -281,7 +281,7 @@
                     
                     try {
                         const startTime = Date.now();
-                        const response = await fetch('/analyze', {
+                        const response = await fetch('https://drowsiness-eight.vercel.app/analyze', {
                             method: 'POST',
                             body: formData
                         });
