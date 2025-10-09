@@ -11,30 +11,67 @@
             margin: 0 auto;
             padding: 20px;
             text-align: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
         }
         .container {
+            background: rgba(255,255,255,0.1);
+            padding: 20px;
+            border-radius: 15px;
             margin: 20px 0;
+            backdrop-filter: blur(10px);
         }
         #video, #canvas {
-            border: 2px solid #333;
-            border-radius: 8px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 12px;
             margin: 10px;
+            background: black;
         }
         .alert {
-            color: red;
+            color: #ff6b6b;
             font-weight: bold;
-            font-size: 24px;
+            font-size: 28px;
             margin: 20px 0;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
         }
         .status {
-            font-size: 18px;
-            margin: 10px 0;
+            font-size: 20px;
+            margin: 15px 0;
+            padding: 10px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 8px;
+        }
+        .metric {
+            font-weight: bold;
+            color: #4ecdc4;
+        }
+        button {
+            background: #4ecdc4;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px;
+            transition: all 0.3s ease;
+        }
+        button:hover {
+            background: #45b7af;
+            transform: translateY(-2px);
         }
     </style>
 </head>
 <body>
-    <h1>Drowsiness Detector</h1>
-    <p>Live Camera Feed - Look at the camera to detect drowsiness</p>
+    <h1>🚗 Drowsiness Detector</h1>
+    <p>Look at the camera to detect drowsiness. Close your eyes for 3+ seconds to trigger alert.</p>
     
     <div class="container">
         <video id="video" width="640" height="480" autoplay playsinline></video>
@@ -42,24 +79,26 @@
     </div>
     
     <div class="status">
-        Fatigue Score: <span id="fatigue">0</span>
+        🎯 Fatigue Score: <span id="fatigue" class="metric">0</span>
     </div>
     
     <div class="status">
-        Blink Counter: <span id="blinkCounter">0</span>
+        👁️ Blink Counter: <span id="blinkCounter" class="metric">0</span>
     </div>
     
     <div class="status">
-        Eyes Detected: <span id="eyesDetected">0</span>
+        👀 Eyes Detected: <span id="eyesDetected" class="metric">0</span>
     </div>
     
     <div id="alert" class="alert" style="display:none;">
-        ⚠️ DROWSY DETECTED! ⚠️
+        ⚠️ DROWSINESS DETECTED! PLEASE TAKE A BREAK! ⚠️
     </div>
     
     <audio id="alertSound" preload="auto">
         <source src="https://assets.mixkit.co/sfx/preview/mixkit-alarm-digital-clock-beep-989.mp3" type="audio/mpeg">
     </audio>
+
+    <button onclick="location.reload()">🔄 Restart Detection</button>
 
     <script>
         const video = document.getElementById("video");
@@ -80,18 +119,20 @@
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { 
                         width: 640, 
-                        height: 480 
+                        height: 480,
+                        facingMode: "user" 
                     } 
                 });
                 video.srcObject = stream;
                 return new Promise((resolve) => {
                     video.onloadedmetadata = () => {
+                        video.play();
                         resolve(video);
                     };
                 });
             } catch (err) {
                 console.error("Error accessing webcam:", err);
-                alert("Error accessing webcam: " + err.message);
+                alert("Cannot access webcam. Please allow camera permissions and refresh the page.");
                 return null;
             }
         }
@@ -106,7 +147,6 @@
                     formData.append("file", blob, "frame.jpg");
                     
                     try {
-                        // Use relative path for deployment
                         const response = await fetch("/analyze", {
                             method: "POST",
                             body: formData
@@ -131,6 +171,8 @@
                                 alertDiv.style.display = 'none';
                                 isAlertPlaying = false;
                             }
+                            
+                            console.log("Analysis result:", data);
                         } else {
                             console.error("Server error:", response.status);
                         }
@@ -146,12 +188,13 @@
             const camera = await setupCamera();
             if (camera) {
                 // Start analysis loop
-                setInterval(captureAndAnalyze, 1000); // Reduced to 1 second interval
+                setInterval(captureAndAnalyze, 1000);
+                console.log("Drowsiness detection started!");
             }
         }
 
         // Start the application
-        init();
+        document.addEventListener('DOMContentLoaded', init);
     </script>
 </body>
 </html>
