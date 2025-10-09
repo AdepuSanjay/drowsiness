@@ -4,7 +4,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import cv2
 import numpy as np
 import base64
-import time
 
 app = FastAPI(title="Drowsiness Detector")
 
@@ -18,16 +17,16 @@ app.add_middleware(
 )
 
 # ---------- Config ----------
-EYE_CLOSED_CONSEC_FRAMES = 10  # About 2-3 seconds
+EYE_CLOSED_CONSEC_FRAMES = 8  # About 2 seconds at 4 FPS
 closed_eye_counter = 0
-last_eye_state = "open"
-last_update_time = time.time()
+drowsy_alert_triggered = False
 
-# Load only face cascade (more reliable)
+# Load Haar cascades - using more reliable cascade files
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
 
 def analyze_frame(frame_bytes):
-    global closed_eye_counter, last_eye_state, last_update_time
+    global closed_eye_counter, drowsy_alert_triggered
     
     try:
         # Convert bytes to image
@@ -39,15 +38,15 @@ def analyze_frame(frame_bytes):
                 "status": "NO FRAME",
                 "is_drowsy": False,
                 "alert_sound": False,
-                "eye_state": "unknown",
+                "eyes_detected": 0,
                 "closed_eye_counter": 0
             }
         
-        # Resize for consistency
+        # Resize frame for faster processing
         frame = cv2.resize(frame, (640, 480))
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Detect faces
+        # Detect faces with better parameters
         faces = face_cascade.detectMultiScale(
             gray, 
             scaleFactor=1.1, 
@@ -55,78 +54,70 @@ def analyze_frame(frame_bytes):
             minSize=(100, 100)
         )
         
-        current_time = time.time()
-        status = "NO FACE - MOVE CLOSER"
+        eyes_detected = 0
+        status = "NO FACE DETECTED"
         is_drowsy = False
         alert_sound = False
-        eye_state = "no_face"
         
         if len(faces) > 0:
             for (x, y, w, h) in faces:
+                # Extract face region
+                roi_gray = gray[y:y+h, x:x+w]
+                roi_color = frame[y:y+h, x:x+w]
+                
+                # Detect eyes within face region with better parameters
+                eyes = eye_cascade.detectMultiScale(
+                    roi_gray,
+                    scaleFactor=1.1,
+                    minNeighbors=3,
+                    minSize=(30, 30)
+                )
+                
+                eyes_detected = len(eyes)
+                
                 # Draw face rectangle
                 cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
                 
-                # SIMPLIFIED APPROACH: Use manual eye regions
-                # Estimate eye regions in the face
-                eye_region_height = h // 3
-                eye_region_width = w // 2
+                # Draw eye rectangles and count valid eyes
+                valid_eyes = 0
+                for (ex, ey, ew, eh) in eyes:
+                    # Filter eyes - they should be in upper half of face
+                    if ey < h/2:
+                        cv2.rectangle(frame, (x+ex, y+ey), (x+ex+ew, y+ey+eh), (0, 255, 0), 2)
+                        valid_eyes += 1
                 
-                # Left eye region (top-left of face)
-                left_eye_x = x + w//4
-                left_eye_y = y + h//4
-                left_eye_roi = gray[left_eye_y:left_eye_y+eye_region_height, 
-                                   left_eye_x:left_eye_x+eye_region_width]
+                eyes_detected = valid_eyes
                 
-                # Right eye region (top-right of face)  
-                right_eye_x = x + w//2
-                right_eye_y = y + h//4
-                right_eye_roi = gray[right_eye_y:right_eye_y+eye_region_height, 
-                                    right_eye_x:right_eye_x+eye_region_width]
-                
-                # Draw eye regions
-                cv2.rectangle(frame, (left_eye_x, left_eye_y), 
-                            (left_eye_x+eye_region_width, left_eye_y+eye_region_height), 
-                            (0, 255, 0), 1)
-                cv2.rectangle(frame, (right_eye_x, right_eye_y), 
-                            (right_eye_x+eye_region_width, right_eye_y+eye_region_height), 
-                            (0, 255, 0), 1)
-                
-                # SIMPLE EYE STATE DETECTION USING BRIGHTNESS
-                # When eyes are open, eye regions have more variation (pupils, whites)
-                # When eyes are closed, eye regions are more uniform (eyelids)
-                
-                left_eye_brightness = np.mean(left_eye_roi) if left_eye_roi.size > 0 else 0
-                right_eye_brightness = np.mean(right_eye_roi) if right_eye_roi.size > 0 else 0
-                
-                # Calculate brightness variation (simple proxy for eye state)
-                left_eye_std = np.std(left_eye_roi) if left_eye_roi.size > 0 else 0
-                right_eye_std = np.std(right_eye_roi) if right_eye_roi.size > 0 else 0
-                
-                avg_std = (left_eye_std + right_eye_std) / 2
-                
-                # Determine eye state based on variation
-                if avg_std > 25:  # High variation = eyes open
-                    eye_state = "open"
-                    closed_eye_counter = max(0, closed_eye_counter - 1)
-                    status = "AWAKE - EYES OPEN"
-                else:  # Low variation = eyes likely closed
-                    eye_state = "closed"
+                # DROWSINESS DETECTION LOGIC
+                if eyes_detected < 2:  # Less than 2 eyes detected
                     closed_eye_counter += 1
-                    status = f"EYES CLOSED ({closed_eye_counter}/{EYE_CLOSED_CONSEC_FRAMES})"
-                
-                # Drowsiness detection
-                if closed_eye_counter >= EYE_CLOSED_CONSEC_FRAMES:
-                    status = "DROWSY! ALERT!"
-                    is_drowsy = True
-                    alert_sound = True
-                
-                # Add eye state info to frame
-                cv2.putText(frame, f"Eye State: {eye_state}", (x, y-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                cv2.putText(frame, f"Variation: {avg_std:.1f}", (x, y+h+20), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    status = f"EYES CLOSING ({closed_eye_counter}/{EYE_CLOSED_CONSEC_FRAMES})"
+                    
+                    if closed_eye_counter >= EYE_CLOSED_CONSEC_FRAMES:
+                        status = "DROWSY! ALERT!"
+                        is_drowsy = True
+                        alert_sound = True
+                        drowsy_alert_triggered = True
+                    else:
+                        alert_sound = False
+                        
+                else:  # 2 eyes detected - awake
+                    if drowsy_alert_triggered:
+                        status = "RECOVERING..."
+                        alert_sound = False
+                        # Reset after a few frames of open eyes
+                        if closed_eye_counter == 0:
+                            drowsy_alert_triggered = False
+                    else:
+                        status = "AWAKE"
+                    closed_eye_counter = max(0, closed_eye_counter - 2)
+                    alert_sound = False
                 
                 break
+        else:
+            closed_eye_counter = 0
+            status = "NO FACE - MOVE CLOSER"
+            alert_sound = False
         
         # ADD OVERLAY TO FRAME
         height, width = frame.shape[:2]
@@ -139,10 +130,10 @@ def analyze_frame(frame_bytes):
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
             cv2.putText(frame, "WAKE UP! ALERT! WAKE UP!", (width//2 - 150, 65), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        elif "EYES CLOSED" in status:
+        elif "EYES CLOSING" in status:
             # Yellow background for warning
             cv2.rectangle(frame, (0, 0), (width, 60), (0, 255, 255), -1)
-            cv2.putText(frame, "⚠️ EYES CLOSED ⚠️", (width//2 - 100, 35), 
+            cv2.putText(frame, "⚠️ EYES CLOSING ⚠️", (width//2 - 120, 35), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
         else:
             # Green background for awake
@@ -152,7 +143,7 @@ def analyze_frame(frame_bytes):
         
         # Info at bottom
         cv2.rectangle(frame, (0, height-40), (width, height), (0, 0, 0), -1)
-        info_text = f"Faces: {len(faces)} | Eye State: {eye_state} | Closed Frames: {closed_eye_counter}"
+        info_text = f"Faces: {len(faces)} | Eyes: {eyes_detected} | Closed Frames: {closed_eye_counter}"
         cv2.putText(frame, info_text, (10, height-10), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
@@ -164,7 +155,7 @@ def analyze_frame(frame_bytes):
             "status": status,
             "is_drowsy": is_drowsy,
             "alert_sound": alert_sound,
-            "eye_state": eye_state,
+            "eyes_detected": eyes_detected,
             "closed_eye_counter": closed_eye_counter,
             "faces_detected": len(faces),
             "processed_frame": processed_frame_base64
@@ -172,11 +163,12 @@ def analyze_frame(frame_bytes):
         
     except Exception as e:
         return {
-            "status": f"ERROR",
+            "status": f"ERROR: {str(e)}",
             "is_drowsy": False,
             "alert_sound": False,
-            "eye_state": "error",
-            "closed_eye_counter": 0
+            "eyes_detected": 0,
+            "closed_eye_counter": 0,
+            "faces_detected": 0
         }
 
 @app.post("/analyze")
@@ -198,7 +190,7 @@ async def home():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Drowsiness Detector - SIMPLIFIED</title>
+        <title>Drowsiness Detector - FIXED</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -276,19 +268,11 @@ async def home():
                 margin-top: 20px;
                 text-align: left;
             }
-            .debug-info {
-                background: #333;
-                color: white;
-                padding: 10px;
-                border-radius: 5px;
-                margin: 10px 0;
-                font-family: monospace;
-            }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🚗 Drowsiness Detector - SIMPLIFIED</h1>
+            <h1>🚗 Drowsiness Detector - FIXED</h1>
             <p class="subtitle">Close your eyes for 2+ seconds to test</p>
             
             <div class="camera-container">
@@ -303,30 +287,25 @@ async def home():
             <div class="metrics">
                 <div class="metric-card">
                     <div>Status</div>
-                    <div id="status" class="metric-value">LOADING...</div>
+                    <div id="status" class="metric-value">AWAKE</div>
                 </div>
                 <div class="metric-card">
-                    <div>Eye State</div>
-                    <div id="eyeState" class="metric-value">-</div>
+                    <div>Eyes Detected</div>
+                    <div id="eyesCount" class="metric-value">0</div>
                 </div>
                 <div class="metric-card">
                     <div>Closed Frames</div>
                     <div id="closedCounter" class="metric-value">0</div>
                 </div>
             </div>
-
-            <div class="debug-info">
-                Debug: <span id="debugInfo">Waiting for camera...</span>
-            </div>
             
             <div class="instructions">
-                <strong>How it works now:</strong>
+                <strong>How to test:</strong>
                 <ul>
-                    <li>System detects your FACE (blue rectangle)</li>
-                    <li>Estimates EYE regions (green rectangles)</li>
-                    <li>Measures brightness variation in eye areas</li>
-                    <li>High variation = Eyes OPEN | Low variation = Eyes CLOSED</li>
-                    <li>Close eyes for 2+ seconds to trigger alert</li>
+                    <li>Make sure your face is clearly visible</li>
+                    <li>Good lighting is important</li>
+                    <li>Close your eyes for 2+ seconds</li>
+                    <li>System will detect and play alert sound</li>
                 </ul>
             </div>
             
@@ -340,14 +319,12 @@ async def home():
             const canvas = document.getElementById('processedCanvas');
             const ctx = canvas.getContext('2d');
             const statusEl = document.getElementById('status');
-            const eyeStateEl = document.getElementById('eyeState');
+            const eyesCountEl = document.getElementById('eyesCount');
             const closedCounterEl = document.getElementById('closedCounter');
             const alertPanel = document.getElementById('alertPanel');
             const alertSound = document.getElementById('alertSound');
-            const debugInfo = document.getElementById('debugInfo');
             
             let isProcessing = false;
-            let frameCount = 0;
             
             // Set canvas size
             canvas.width = 640;
@@ -369,19 +346,15 @@ async def home():
                         console.log('Camera ready');
                         canvas.width = video.videoWidth;
                         canvas.height = video.videoHeight;
-                        debugInfo.textContent = 'Camera ready - Processing frames...';
                     };
                     
                 } catch (err) {
-                    debugInfo.textContent = 'Camera error: ' + err.message;
                     alert('Camera error: ' + err.message);
                 }
             }
             
             // Process frame
             async function processFrame() {
-                frameCount++;
-                
                 if (isProcessing || video.readyState !== video.HAVE_ENOUGH_DATA) {
                     requestAnimationFrame(processFrame);
                     return;
@@ -410,18 +383,8 @@ async def home():
                             
                             // Update UI
                             statusEl.textContent = data.status;
-                            eyeStateEl.textContent = data.eye_state;
+                            eyesCountEl.textContent = data.eyes_detected;
                             closedCounterEl.textContent = data.closed_eye_counter;
-                            debugInfo.textContent = `Frames: ${frameCount} | Faces: ${data.faces_detected} | State: ${data.eye_state}`;
-                            
-                            // Color code eye state
-                            if (data.eye_state === 'open') {
-                                eyeStateEl.style.color = '#4CAF50';
-                            } else if (data.eye_state === 'closed') {
-                                eyeStateEl.style.color = '#ff9800';
-                            } else {
-                                eyeStateEl.style.color = '#666';
-                            }
                             
                             // Handle alerts
                             if (data.alert_sound) {
@@ -440,16 +403,13 @@ async def home():
                                 };
                                 img.src = 'data:image/jpeg;base64,' + data.processed_frame;
                             }
-                        } else {
-                            debugInfo.textContent = 'Server error: ' + response.status;
                         }
                     } catch (err) {
-                        debugInfo.textContent = 'Fetch error: ' + err.message;
                         console.error('Error:', err);
                     }
                     
                     isProcessing = false;
-                    setTimeout(() => requestAnimationFrame(processFrame), 100); // ~10 FPS
+                    requestAnimationFrame(processFrame);
                 }, 'image/jpeg', 0.7);
             }
             
@@ -465,4 +425,4 @@ async def home():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "message": "Simplified drowsiness detector is working!"}
+    return {"status": "healthy", "message": "Drowsiness detector is working!"}
