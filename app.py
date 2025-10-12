@@ -1,110 +1,83 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse, HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware
-import numpy as np
-import base64
-import io
-from PIL import Image
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
 
-app = FastAPI(title="Drowsiness Detector")
+# Create FastAPI instance
+app = FastAPI(title="Simple API", version="1.0.0")
 
-# ---------- CORS ----------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Pydantic model for data validation
+class Item(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    price: float
 
-# ---------- Config ----------
-EAR_CONSEC_FRAMES = 3
-blink_counter = 0
-fatigue_score = 0.0
+# In-memory database (for demo purposes)
+fake_db = []
 
-# ---------- Helper ----------
-def smooth(prev, new, alpha=0.2):
-    return alpha * new + (1 - alpha) * prev
-
-def analyze_frame(frame_bytes):
-    global blink_counter, fatigue_score
-    
-    try:
-        # Convert bytes to PIL Image
-        image = Image.open(io.BytesIO(frame_bytes))
-        
-        # Convert to numpy array
-        img_array = np.array(image)
-        
-        # Simple face detection simulation
-        # In a real scenario, you'd use a proper face detection model
-        height, width = img_array.shape[:2]
-        
-        # Simulate face detection based on image characteristics
-        # This is a placeholder - you'd replace with actual ML model
-        face_detected = detect_face_simulation(img_array)
-        
-        if face_detected:
-            # Simulate eye detection
-            eyes_detected = detect_eyes_simulation(img_array)
-            
-            if eyes_detected < 2:
-                blink_counter += 1
-            else:
-                blink_counter = 0
-                
-            score = 1.0 if blink_counter >= EAR_CONSEC_FRAMES else 0.0
-            fatigue_score = smooth(fatigue_score, score)
-        else:
-            blink_counter = 0
-            fatigue_score = smooth(fatigue_score, 0.0)
-            
-        return {
-            "fatigue_score": float(fatigue_score),
-            "blink_counter": int(blink_counter),
-            "eyes_detected": eyes_detected if face_detected else 0,
-            "faces_detected": 1 if face_detected else 0,
-            "status": "analyzed"
-        }
-        
-    except Exception as e:
-        return {
-            "fatigue_score": 0.0,
-            "blink_counter": 0,
-            "error": str(e),
-            "status": "error"
-        }
-
-def detect_face_simulation(img_array):
-    """Simulate face detection - replace with actual model"""
-    # Simple brightness-based detection
-    avg_brightness = np.mean(img_array)
-    return avg_brightness > 50  # Arbitrary threshold
-
-def detect_eyes_simulation(img_array):
-    """Simulate eye detection - replace with actual model"""
-    # Return random number of eyes for simulation
-    import random
-    return random.choice([0, 1, 2])
-
-# ---------- Routes ----------
-@app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
-    frame_bytes = await file.read()
-    result = analyze_frame(frame_bytes)
-    return JSONResponse(result)
-
+# Root endpoint
 @app.get("/")
-async def home():
-    try:
-        with open("index.html", "r") as f:
-            return HTMLResponse(content=f.read())
-    except FileNotFoundError:
-        return HTMLResponse("<h1>Drowsiness Detector</h1><p>index.html not found</p>")
+async def root():
+    return {"message": "Welcome to Simple FastAPI!"}
 
+# Health check endpoint
 @app.get("/health")
-async def health():
+async def health_check():
     return {"status": "healthy"}
+
+# Get all items
+@app.get("/items", response_model=List[Item])
+async def get_all_items():
+    return fake_db
+
+# Get single item by ID
+@app.get("/items/{item_id}", response_model=Item)
+async def get_item(item_id: int):
+    for item in fake_db:
+        if item["id"] == item_id:
+            return item
+    raise HTTPException(status_code=404, detail="Item not found")
+
+# Create new item
+@app.post("/items", response_model=Item)
+async def create_item(item: Item):
+    # Check if item with same ID exists
+    for existing_item in fake_db:
+        if existing_item["id"] == item.id:
+            raise HTTPException(status_code=400, detail="Item ID already exists")
+    
+    item_dict = item.dict()
+    fake_db.append(item_dict)
+    return item_dict
+
+# Update item
+@app.put("/items/{item_id}", response_model=Item)
+async def update_item(item_id: int, item: Item):
+    if item.id != item_id:
+        raise HTTPException(status_code=400, detail="Item ID mismatch")
+    
+    for index, existing_item in enumerate(fake_db):
+        if existing_item["id"] == item_id:
+            fake_db[index] = item.dict()
+            return fake_db[index]
+    
+    raise HTTPException(status_code=404, detail="Item not found")
+
+# Delete item
+@app.delete("/items/{item_id}")
+async def delete_item(item_id: int):
+    for index, item in enumerate(fake_db):
+        if item["id"] == item_id:
+            deleted_item = fake_db.pop(index)
+            return {"message": "Item deleted", "deleted_item": deleted_item}
+    
+    raise HTTPException(status_code=404, detail="Item not found")
+
+# Search items by name
+@app.get("/items/search/")
+async def search_items(name: str):
+    results = [item for item in fake_db if name.lower() in item["name"].lower()]
+    return {"results": results}
 
 if __name__ == "__main__":
     import uvicorn
